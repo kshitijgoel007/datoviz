@@ -342,6 +342,20 @@ if(TARGET datoviz_app AND DVZ_HAS_GLFW AND TARGET datoviz_gui)
     dvz_add_example(lab text_msdf_lab lab/text_msdf_lab.c)
 endif()
 
+if(APPLE AND TARGET datoviz_vklite)
+    dvz_add_example(
+        lab metal_external_buffer
+        "lab/metal_external_buffer.c;lab/metal_external_buffer_metal.m")
+    find_library(DVZ_METAL_FRAMEWORK Metal REQUIRED)
+    find_library(DVZ_FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    target_link_libraries(
+        example_c_lab_metal_external_buffer
+        PRIVATE ${DVZ_METAL_FRAMEWORK} ${DVZ_FOUNDATION_FRAMEWORK})
+    target_compile_options(
+        example_c_lab_metal_external_buffer
+        PRIVATE $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>)
+endif()
+
 dvz_add_example(lab rolling_field_bench lab/rolling_field_bench.c)
 target_include_directories(example_c_lab_rolling_field_bench PRIVATE ${PROJECT_SOURCE_DIR}/src/drp2)
 

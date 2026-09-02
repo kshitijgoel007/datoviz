@@ -96,6 +96,51 @@ static VmaAllocatorCreateFlags _set_vma_flags(DvzDevice* device)
 
 
 
+#if OS_MACOS
+/**
+ * Verify exact external-buffer support before allocating MTLBuffer-exportable memory.
+ *
+ * @param allocator allocator configured for MTLBuffer export
+ * @param info exact Vulkan buffer creation info
+ * @return true when the exact configuration is exportable and compatible
+ */
+static bool _metal_external_buffer_supported(DvzVma* allocator, const VkBufferCreateInfo* info)
+{
+    ANN(allocator);
+    ANN(allocator->device);
+    ANN(info);
+
+    if (allocator->external != VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT)
+    {
+        log_error("MTLBuffer external-memory allocations require one exact handle type");
+        return false;
+    }
+
+    VkPhysicalDeviceExternalBufferInfo external_info = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
+        .flags = info->flags,
+        .usage = info->usage,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT,
+    };
+    VkExternalBufferProperties properties = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES,
+    };
+    vkGetPhysicalDeviceExternalBufferProperties(
+        dvz_device_physical_device(allocator->device), &external_info, &properties);
+
+    VkExternalMemoryProperties memory = properties.externalMemoryProperties;
+    if ((memory.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) == 0 ||
+        (memory.compatibleHandleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT) == 0)
+    {
+        log_error("exact Vulkan buffer configuration cannot be exported as MTLBuffer");
+        return false;
+    }
+    return true;
+}
+#endif
+
+
+
 #define ENSURE_EXTERNAL                                                                           \
     if (allocator->external == 0)                                                                 \
     {                                                                                             \
@@ -371,6 +416,13 @@ int dvz_allocator_buffer(
     VkBufferCreateInfo info_local = *info;
     if (allocator->external != 0)
     {
+#if OS_MACOS
+        if ((allocator->external & VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT) != 0 &&
+            !_metal_external_buffer_supported(allocator, &info_local))
+        {
+            return -1;
+        }
+#endif
         external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
         external_info.handleTypes = allocator->external;
         external_info.pNext = info_local.pNext;
@@ -412,6 +464,14 @@ int dvz_allocator_image(
     alloc_info.usage = alloc->usage = VMA_MEMORY_USAGE_AUTO;
     alloc->flags = flags;
     alloc_info.flags = _dvz_to_vma_allocation_flags(flags);
+
+#if OS_MACOS
+    if (allocator->external == VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT)
+    {
+        log_error("MTLBUFFER external-memory allocators support buffers only");
+        return -1;
+    }
+#endif
 
     VkImageCreateInfo info_local = *info;
     VkExternalMemoryImageCreateInfo external_info = {

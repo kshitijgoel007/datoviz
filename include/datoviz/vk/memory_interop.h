@@ -42,8 +42,9 @@ typedef struct DvzInteropBufferExportConfig DvzInteropBufferExportConfig;
  */
 typedef enum DvzInteropBufferConsumer
 {
-    DVZ_INTEROP_BUFFER_CONSUMER_VERTEX_ATTRIBUTE_READ,
-    DVZ_INTEROP_BUFFER_CONSUMER_TRANSFER_READ,
+    DVZ_INTEROP_BUFFER_CONSUMER_VERTEX_ATTRIBUTE_READ = 0,
+    DVZ_INTEROP_BUFFER_CONSUMER_TRANSFER_READ = 1,
+    DVZ_INTEROP_BUFFER_CONSUMER_NONE = 2,
 } DvzInteropBufferConsumer;
 
 
@@ -139,12 +140,13 @@ DVZ_EXPORT DvzInteropBufferExportConfig dvz_interop_buffer_export_config(void);
 
 
 /**
- * Create an advanced GPU context for Vulkan-owned CUDA/CuPy interop buffers.
+ * Create an advanced GPU context for Vulkan-owned external-memory interop buffers.
  *
  * This helper is binding substrate, not the final high-level Python API. It creates a Datoviz GPU
  * context whose allocator exports Vulkan memory with `memory_handle_type`, and whose device has the
- * external-memory, external-semaphore, and timeline-semaphore support needed by the Linux/NVIDIA
- * CuPy smoke. Destroy the returned context with dvz_gpu_ctx_destroy().
+ * external-memory and synchronization support needed by the selected handle type. The exact
+ * MTLBUFFER handle type selects the experimental Apple Silicon Metal path. Destroy the returned
+ * context with dvz_gpu_ctx_destroy().
  *
  * @param gpu_index Vulkan physical-device index to use
  * @param memory_handle_type external memory handle type for exported allocations
@@ -155,7 +157,7 @@ DVZ_EXPORT DvzGpuCtx* dvz_interop_gpu_ctx(
 
 
 /**
- * Create an advanced GPU context for CUDA/CuPy interop that also supports presentation.
+ * Create an advanced external-memory GPU context that also supports presentation.
  *
  * This is the configurable variant of dvz_interop_gpu_ctx(). It keeps the same external-memory
  * allocator policy and timeline-semaphore setup, then optionally adds caller-provided Vulkan

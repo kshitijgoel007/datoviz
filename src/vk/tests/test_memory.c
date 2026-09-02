@@ -16,6 +16,7 @@
 
 #include <inttypes.h>
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 #if !OS_WINDOWS
 #include <unistd.h>
@@ -39,6 +40,7 @@
 #include "datoviz/vk/instance.h"
 #include "datoviz/vk/memory.h"
 #include "datoviz/vk/memory_interop.h"
+#include "datoviz/vk/metal_interop.h"
 #include "datoviz/vk/queues.h"
 #include "datoviz/vklite/buffers.h"
 #include "datoviz/vklite/commands.h"
@@ -473,9 +475,9 @@ int test_memory_interop_buffer_export(TstContext* suite, const TstCase* tstitem)
     ANN(suite);
     ANN(tstitem);
 
-#if !OS_UNIX
-    log_debug("test_memory_interop_buffer_export skipped: opaque FD path is Unix-only");
-    tst_skip(suite, "opaque FD path is Unix-only");
+#if !OS_LINUX
+    log_debug("test_memory_interop_buffer_export skipped: opaque FD path is Linux-only");
+    tst_skip(suite, "opaque FD path is Linux-only");
     return 0;
 #else
     int out = 0;
@@ -690,6 +692,254 @@ cleanup:
         dvz_device_destroy(device);
     if (instance != NULL)
         dvz_instance_destroy(instance);
+    return out;
+#endif
+}
+
+
+
+/*************************************************************************************************/
+/*  Metal interop tests                                                                          */
+/*************************************************************************************************/
+
+/**
+ * Return whether a Metal export descriptor contains only zero bytes.
+ *
+ * @param desc descriptor to inspect
+ * @return true when every byte is zero
+ */
+static bool _metal_export_zeroed(const DvzInteropMetalBufferExport* desc)
+{
+    ANN(desc);
+    const DvzInteropMetalBufferExport zero = {0};
+    return memcmp(desc, &zero, sizeof(zero)) == 0;
+}
+
+
+
+/**
+ * Verify Vulkan-Metal buffer-export validation, metadata, and record-only barriers.
+ *
+ * @param suite the test suite
+ * @param tstitem the test item
+ * @return 0 on success
+ */
+int test_memory_interop_metal_buffer(TstContext* suite, const TstCase* tstitem)
+{
+    ANN(suite);
+    ANN(tstitem);
+
+#if !OS_MACOS || !defined(__aarch64__)
+    DvzInteropMetalBufferExport export_desc;
+    memset(&export_desc, 0xA5, sizeof(export_desc));
+    AT(dvz_interop_metal_buffer_export_from_buffer(NULL, NULL, &export_desc) < 0);
+    AT(_metal_export_zeroed(&export_desc));
+    AT(dvz_interop_metal_semaphore_timeline(NULL, 0, NULL) < 0);
+    AT(!dvz_interop_metal_buffer_record_acquire(
+        NULL, NULL, 0, 1, DVZ_INTEROP_BUFFER_CONSUMER_VERTEX_ATTRIBUTE_READ));
+    AT(!dvz_interop_metal_buffer_record_release(
+        NULL, NULL, 0, 1, DVZ_INTEROP_BUFFER_CONSUMER_NONE));
+    return 0;
+#else
+    int out = 0;
+    (void)setenv("MVK_CONFIG_USE_MTLHEAP", "0", 0);
+    tst_expect_log_begin(suite, LOG_ERROR);
+    DvzGpuCtx* ctx = dvz_interop_gpu_ctx(
+        0, VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT);
+    int init_error_log = tst_expect_error_end(suite);
+    if (ctx == NULL)
+    {
+        tst_skip(suite, "Vulkan-Metal buffer interop extensions are unavailable");
+        return 0;
+    }
+    AT(init_error_log != 0);
+
+    DvzDevice* device = dvz_gpu_ctx_device(ctx);
+    DvzVma* allocator = dvz_gpu_ctx_alloc(ctx);
+    ANN(device);
+    ANN(allocator);
+    AT(dvz_device_has_extension(device, VK_EXT_EXTERNAL_MEMORY_METAL_EXTENSION_NAME));
+    AT(dvz_device_has_extension(device, VK_EXT_METAL_OBJECTS_EXTENSION_NAME));
+    AT(vkGetMemoryMetalHandleEXT != NULL);
+    AT(vkExportMetalObjectsEXT != NULL);
+
+    const VkBufferUsageFlags usage =
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    VkPhysicalDeviceExternalBufferInfo external_info = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO,
+        .usage = usage,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT,
+    };
+    VkExternalBufferProperties external_properties = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES,
+    };
+    vkGetPhysicalDeviceExternalBufferProperties(
+        dvz_device_physical_device(device), &external_info, &external_properties);
+    VkExternalMemoryProperties memory = external_properties.externalMemoryProperties;
+    if ((memory.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) == 0 ||
+        (memory.compatibleHandleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT) == 0)
+    {
+        dvz_gpu_ctx_destroy(ctx);
+        tst_skip(suite, "exact Vulkan vertex-buffer properties are not MTLBuffer-exportable");
+        return 0;
+    }
+
+    DvzSemaphore* metal_semaphore = dvz_semaphore_create_wrapper();
+    DvzSemaphore* regular_semaphore = dvz_semaphore_create_wrapper();
+    ANN(metal_semaphore);
+    ANN(regular_semaphore);
+    AT(dvz_interop_metal_semaphore_timeline(device, 0, metal_semaphore) == 0);
+    AT_EXPECTED_ERROR_STRICT(
+        suite, dvz_interop_metal_semaphore_timeline(device, 0, metal_semaphore) < 0);
+    dvz_semaphore_timeline(device, 0, regular_semaphore, 0);
+
+    DvzInteropBufferExportConfig config = dvz_interop_buffer_export_config();
+    config.size = 64;
+    config.drp2_usage = DVZ_DRP2_BUFFER_USAGE_VERTEX | DVZ_DRP2_BUFFER_USAGE_COPY_SRC;
+    config.semaphore = metal_semaphore;
+    config.semaphore_handle_type = 0;
+    config.semaphore_value = 7;
+
+    DvzVma* wrong_allocator = dvz_allocator_create();
+    ANN(wrong_allocator);
+    AT(dvz_device_allocator(device, 0, wrong_allocator) == 0);
+    DvzBuffer* wrong_buffer = dvz_buffer_create_wrapper();
+    ANN(wrong_buffer);
+    dvz_buffer(device, wrong_allocator, wrong_buffer);
+    dvz_buffer_size(wrong_buffer, 64);
+    dvz_buffer_usage(wrong_buffer, usage);
+    dvz_buffer_flags(wrong_buffer, DVZ_ALLOC_DEDICATED_MEMORY);
+    AT(dvz_buffer_create(wrong_buffer) == 0);
+    DvzInteropMetalBufferExport export_desc;
+    memset(&export_desc, 0xA5, sizeof(export_desc));
+    AT_EXPECTED_ERROR_STRICT(
+        suite,
+        dvz_interop_metal_buffer_export_from_buffer(wrong_buffer, &config, &export_desc) < 0);
+    AT(_metal_export_zeroed(&export_desc));
+
+    DvzBuffer* suballocated = dvz_buffer_create_wrapper();
+    ANN(suballocated);
+    dvz_buffer(device, allocator, suballocated);
+    dvz_buffer_size(suballocated, 64);
+    dvz_buffer_usage(suballocated, usage);
+    AT(dvz_buffer_create(suballocated) == 0);
+    memset(&export_desc, 0xA5, sizeof(export_desc));
+    AT_EXPECTED_ERROR_STRICT(
+        suite,
+        dvz_interop_metal_buffer_export_from_buffer(suballocated, &config, &export_desc) < 0);
+    AT(_metal_export_zeroed(&export_desc));
+
+    DvzBuffer* buffer = dvz_buffer_create_wrapper();
+    ANN(buffer);
+    dvz_buffer(device, allocator, buffer);
+    dvz_buffer_size(buffer, 64);
+    dvz_buffer_usage(buffer, usage);
+    dvz_buffer_flags(buffer, DVZ_ALLOC_DEDICATED_MEMORY);
+    AT(dvz_buffer_create(buffer) == 0);
+
+    DvzInteropBufferExportConfig invalid = config;
+    invalid.offset = 64;
+    memset(&export_desc, 0xA5, sizeof(export_desc));
+    AT_EXPECTED_ERROR_STRICT(
+        suite, dvz_interop_metal_buffer_export_from_buffer(buffer, &invalid, &export_desc) < 0);
+    AT(_metal_export_zeroed(&export_desc));
+    invalid = config;
+    invalid.size = 65;
+    memset(&export_desc, 0xA5, sizeof(export_desc));
+    AT_EXPECTED_ERROR_STRICT(
+        suite, dvz_interop_metal_buffer_export_from_buffer(buffer, &invalid, &export_desc) < 0);
+    AT(_metal_export_zeroed(&export_desc));
+    invalid = config;
+    invalid.semaphore = regular_semaphore;
+    memset(&export_desc, 0xA5, sizeof(export_desc));
+    AT_EXPECTED_ERROR_STRICT(
+        suite, dvz_interop_metal_buffer_export_from_buffer(buffer, &invalid, &export_desc) < 0);
+    AT(_metal_export_zeroed(&export_desc));
+    invalid = config;
+    invalid.semaphore_handle_type = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+    memset(&export_desc, 0xA5, sizeof(export_desc));
+    AT_EXPECTED_ERROR_STRICT(
+        suite, dvz_interop_metal_buffer_export_from_buffer(buffer, &invalid, &export_desc) < 0);
+    AT(_metal_export_zeroed(&export_desc));
+
+    AT(dvz_interop_metal_buffer_export_from_buffer(buffer, &config, &export_desc) == 0);
+    AT(export_desc.version == DVZ_INTEROP_METAL_BUFFER_EXPORT_VERSION);
+    AT(export_desc.metal_buffer != NULL);
+    AT(export_desc.metal_shared_event != NULL);
+    AT(export_desc.allocation_size >= 64);
+    AT(export_desc.offset == 0);
+    AT(export_desc.size == 64);
+    AT(export_desc.vk_usage == usage);
+    AT(export_desc.drp2_usage == config.drp2_usage);
+    AT((export_desc.allocation_flags & DVZ_ALLOC_DEDICATED_MEMORY) != 0);
+    AT(export_desc.device_uuid_valid == 1);
+    AT(export_desc.semaphore_value == 7);
+
+    DvzQueue* queue = dvz_device_queue(device, DVZ_QUEUE_MAIN);
+    DvzCommands* release = dvz_commands_create_wrapper();
+    DvzCommands* acquire = dvz_commands_create_wrapper();
+    ANN(queue);
+    ANN(release);
+    ANN(acquire);
+    dvz_commands(device, queue, 1, release);
+    dvz_commands(device, queue, 1, acquire);
+    AT(dvz_cmd_begin_result(release) == 0);
+    AT_EXPECTED_ERROR_STRICT(
+        suite, !dvz_interop_metal_buffer_record_release(
+                   release, buffer, 0, 65, DVZ_INTEROP_BUFFER_CONSUMER_NONE));
+    AT(dvz_interop_metal_buffer_record_release(
+        release, buffer, 0, 64, DVZ_INTEROP_BUFFER_CONSUMER_NONE));
+    AT(dvz_cmd_end_result(release) == 0);
+    AT(dvz_cmd_begin_result(acquire) == 0);
+    AT_EXPECTED_ERROR_STRICT(
+        suite, !dvz_interop_metal_buffer_record_acquire(
+                   acquire, buffer, 0, 64, DVZ_INTEROP_BUFFER_CONSUMER_NONE));
+    AT(dvz_interop_metal_buffer_record_acquire(
+        acquire, buffer, 0, 64, DVZ_INTEROP_BUFFER_CONSUMER_VERTEX_ATTRIBUTE_READ));
+    AT(dvz_cmd_end_result(acquire) == 0);
+
+    dvz_commands_destroy(acquire);
+    dvz_commands_free(acquire);
+    dvz_commands_destroy(release);
+    dvz_commands_free(release);
+    dvz_buffer_destroy(buffer);
+    dvz_buffer_free(buffer);
+    dvz_buffer_destroy(suballocated);
+    dvz_buffer_free(suballocated);
+    dvz_buffer_destroy(wrong_buffer);
+    dvz_buffer_free(wrong_buffer);
+    dvz_allocator_destroy(wrong_allocator);
+    dvz_allocator_free(wrong_allocator);
+    dvz_semaphore_destroy(regular_semaphore);
+    dvz_semaphore_free(regular_semaphore);
+    dvz_semaphore_destroy(metal_semaphore);
+    dvz_semaphore_free(metal_semaphore);
+
+    for (uint32_t i = 0; i < 2; i++)
+    {
+        DvzBuffer* repeat_buffer = dvz_buffer_create_wrapper();
+        DvzSemaphore* repeat_semaphore = dvz_semaphore_create_wrapper();
+        ANN(repeat_buffer);
+        ANN(repeat_semaphore);
+        dvz_buffer(device, allocator, repeat_buffer);
+        dvz_buffer_size(repeat_buffer, 64);
+        dvz_buffer_usage(repeat_buffer, usage);
+        dvz_buffer_flags(repeat_buffer, DVZ_ALLOC_DEDICATED_MEMORY);
+        AT(dvz_buffer_create(repeat_buffer) == 0);
+        AT(dvz_interop_metal_semaphore_timeline(device, 0, repeat_semaphore) == 0);
+        config.semaphore = repeat_semaphore;
+        AT(dvz_interop_metal_buffer_export_from_buffer(
+               repeat_buffer, &config, &export_desc) == 0);
+        AT(export_desc.metal_buffer != NULL);
+        AT(export_desc.metal_shared_event != NULL);
+        dvz_semaphore_destroy(repeat_semaphore);
+        dvz_semaphore_free(repeat_semaphore);
+        dvz_buffer_destroy(repeat_buffer);
+        dvz_buffer_free(repeat_buffer);
+    }
+
+    out = dvz_gpu_ctx_error_count(ctx) > 0;
+    dvz_gpu_ctx_destroy(ctx);
     return out;
 #endif
 }

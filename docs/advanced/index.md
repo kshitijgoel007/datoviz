@@ -98,6 +98,7 @@ produces presentation, capture, or readback output.
 - [WebGPU example matrix](../examples/webgpu-matrix.md)
 - [Compute and graphics](../reference/compute-graphics.md) — experimental
 - [Share Datoviz buffers with CUDA](cuda-external-memory.md) — experimental, Linux/NVIDIA only
+- [Share Datoviz buffers with Metal](metal-external-memory.md) — experimental, Apple Silicon only
 - [Deploy to the web](../how-to/deploy-to-web.md)
 - [Embed in Qt](../how-to/embed-in-qt.md)
 - [Record and replay](../how-to/record-replay.md)

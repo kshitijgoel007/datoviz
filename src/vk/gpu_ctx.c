@@ -17,6 +17,10 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <volk.h>
 
 #include "_alloc.h"
 #include "_assertions.h"
@@ -68,6 +72,55 @@ static bool _gpu_ctx_config_validate(const DvzGpuCtxConfig* cfg)
 
 
 
+#if OS_MACOS && defined(__aarch64__)
+/**
+ * Reject the known MoltenVK 1.4.1 external-buffer heap desynchronization.
+ *
+ * MoltenVK 1.4.2 fixed exported buffers becoming out of sync with their backing Metal heaps.
+ * Older versions remain usable when heap allocation was disabled before Vulkan initialization.
+ *
+ * @param device created Vulkan device
+ * @return true when MTLBuffer export is reliable for this driver configuration
+ */
+static bool _gpu_ctx_metal_export_reliable(DvzDevice* device)
+{
+    ANN(device);
+
+    VkPhysicalDeviceDriverProperties driver = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+    };
+    VkPhysicalDeviceProperties2 properties = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &driver,
+    };
+    vkGetPhysicalDeviceProperties2(dvz_device_physical_device(device), &properties);
+    if (driver.driverID != VK_DRIVER_ID_MOLTENVK)
+        return true;
+
+    unsigned int major = 0;
+    unsigned int minor = 0;
+    unsigned int patch = 0;
+    int parsed = sscanf(driver.driverInfo, "%u.%u.%u", &major, &minor, &patch);
+    if (parsed >= 2 &&
+        (major > 1 || (major == 1 && (minor > 4 || (minor == 4 && patch >= 2)))))
+    {
+        return true;
+    }
+
+    const char* use_heap = getenv("MVK_CONFIG_USE_MTLHEAP");
+    if (use_heap != NULL && strcmp(use_heap, "0") == 0)
+        return true;
+
+    log_error(
+        "MoltenVK %s requires MVK_CONFIG_USE_MTLHEAP=0 for reliable MTLBuffer export; "
+        "MoltenVK 1.4.2 or newer contains the driver fix",
+        driver.driverInfo);
+    return false;
+}
+#endif
+
+
+
 /**
  * Request device extensions needed when exporting memory to external APIs.
  *
@@ -88,6 +141,14 @@ static void _gpu_ctx_request_export_extensions(
     dvz_device_config_request_extension(dcfg, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
     dvz_device_config_request_extension(dcfg, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
     dvz_device_config_request_extension(dcfg, VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
+#if OS_MACOS
+    if (cfg->export_handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT)
+    {
+        dvz_device_config_request_extension(dcfg, VK_EXT_EXTERNAL_MEMORY_METAL_EXTENSION_NAME);
+        dvz_device_config_request_extension(dcfg, VK_EXT_METAL_OBJECTS_EXTENSION_NAME);
+        return;
+    }
+#endif
 #if OS_LINUX
     dvz_device_config_request_extension(dcfg, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
     dvz_device_config_request_extension(dcfg, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
@@ -394,6 +455,20 @@ DvzGpuCtx* dvz_interop_gpu_ctx_ex(
         log_error("interop GPU context requires an external memory handle type");
         return NULL;
     }
+    bool metal_handle =
+        (memory_handle_type & VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT) != 0;
+    if (metal_handle && memory_handle_type != VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLBUFFER_BIT_EXT)
+    {
+        log_error("Metal interop requires the exact MTLBUFFER external-memory handle type");
+        return NULL;
+    }
+#if !OS_MACOS || !defined(__aarch64__)
+    if (metal_handle)
+    {
+        log_error("Vulkan-Metal buffer interop runtime support requires Apple Silicon");
+        return NULL;
+    }
+#endif
     if (instance_extension_count > 0 && instance_extensions == NULL)
     {
         log_error("interop GPU context requires an extension-name array when count is nonzero");
@@ -406,7 +481,8 @@ DvzGpuCtx* dvz_interop_gpu_ctx_ex(
     }
 
     DvzGpuCtxConfig cfg = dvz_gpu_ctx_config();
-    dvz_gpu_ctx_config_validation(&cfg, false);
+    dvz_gpu_ctx_config_validation(
+        &cfg, metal_handle ? (ENABLE_VALIDATION_LAYERS != 0) : false);
     dvz_gpu_ctx_config_gpu(&cfg, gpu_index);
     dvz_gpu_ctx_config_alloc(&cfg, memory_handle_type);
     for (uint32_t i = 0; i < instance_extension_count; i++)
@@ -442,7 +518,26 @@ DvzGpuCtx* dvz_interop_gpu_ctx_ex(
     };
     dvz_gpu_ctx_config_features13(&cfg, &features13);
 
-    return dvz_gpu_ctx(&cfg);
+    DvzGpuCtx* ctx = dvz_gpu_ctx(&cfg);
+#if OS_MACOS && defined(__aarch64__)
+    if (ctx != NULL && metal_handle)
+    {
+        if (!dvz_device_has_extension(ctx->device, VK_EXT_EXTERNAL_MEMORY_METAL_EXTENSION_NAME) ||
+            !dvz_device_has_extension(ctx->device, VK_EXT_METAL_OBJECTS_EXTENSION_NAME) ||
+            vkGetMemoryMetalHandleEXT == NULL || vkExportMetalObjectsEXT == NULL)
+        {
+            log_error("required Vulkan-Metal extensions or procedures are unavailable");
+            dvz_gpu_ctx_destroy(ctx);
+            return NULL;
+        }
+        if (!_gpu_ctx_metal_export_reliable(ctx->device))
+        {
+            dvz_gpu_ctx_destroy(ctx);
+            return NULL;
+        }
+    }
+#endif
+    return ctx;
 }
 
 

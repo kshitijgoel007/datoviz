@@ -74,6 +74,17 @@ non_public_examples:
     source: examples/c/lab/axis_lattice_smoke.c
     validation: smoke
 
+  - id: lab_metal_external_buffer
+    title: Vulkan-Metal External Buffer
+    stage: v0.4_experimental
+    lane: lab
+    source: examples/c/lab/metal_external_buffer.c
+    validation: smoke+interop+readback+validation
+    extra_sources:
+      - label: Metal shim
+        language: objective-c
+        path: examples/c/lab/metal_external_buffer_metal.m
+
   - id: lab_point_stress
     title: Point Stress
     stage: v0.4_experimental

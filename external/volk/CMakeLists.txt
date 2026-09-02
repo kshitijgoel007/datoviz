@@ -20,3 +20,8 @@ if(WIN32)
     # Ensure Win32-specific Vulkan surface/interop entry points are declared/defined by Volk.
     target_compile_definitions(datoviz_volk PUBLIC VK_USE_PLATFORM_WIN32_KHR)
 endif()
+
+if(APPLE)
+    # Ensure Metal surface and external-object entry points are declared and loaded by Volk.
+    target_compile_definitions(datoviz_volk PUBLIC VK_USE_PLATFORM_METAL_EXT)
+endif()

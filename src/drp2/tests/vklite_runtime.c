@@ -779,9 +779,9 @@ int test_drp2_runtime_vklite_draws_cuda_external_vertex_buffer(TstContext* suite
     ANN(suite);
     (void)item;
 
-#if !OS_UNIX
-    log_warn("DRP2 CUDA external vertex-buffer test skipped: opaque FD path is Unix-only");
-    tst_skip(suite, "opaque FD path is Unix-only");
+#if !OS_LINUX
+    log_warn("DRP2 CUDA external vertex-buffer test skipped: opaque FD path is Linux-only");
+    tst_skip(suite, "opaque FD path is Linux-only");
     return 0;
 #else
     if (!drp2_test_vklite_runtime_available())

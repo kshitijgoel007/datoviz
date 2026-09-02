@@ -157,6 +157,7 @@ int test_vk(TstSuite* suite)
     TST_VK_SELECTED_CASE(test_memory_interop_buffer_timeline);
     // External-memory helper maintains independent GPU 0 selection pending its interop policy.
     TST_VK_CASE(test_memory_interop_buffer_export);
+    TST_VK_CASE(test_memory_interop_metal_buffer);
 
 #if DVZ_HAS_CUDA && !DVZ_ENABLE_ASAN_IN_DEBUG && !DVZ_USING_MSAN && !DVZ_USING_TSAN
     // CUDA device-0 UUID matching owns identity and is exempt from Vulkan index selection.

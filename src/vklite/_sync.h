@@ -40,6 +40,9 @@ struct DvzSemaphore
     DvzDevice* device;
     VkSemaphore vk_semaphore;
     uint64_t value;
+    VkExternalSemaphoreHandleTypeFlags external_handle_types;
+    bool timeline;
+    bool metal_shared_event_exportable;
 };
 
 

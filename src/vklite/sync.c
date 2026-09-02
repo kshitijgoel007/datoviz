@@ -546,6 +546,9 @@ void dvz_semaphore(DvzDevice* device, DvzSemaphore* semaphore)
     VkSemaphoreCreateInfo info = {0};
     info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     VK_CHECK_RESULT(vkCreateSemaphore(vkd, &info, NULL, &semaphore->vk_semaphore));
+    semaphore->external_handle_types = 0;
+    semaphore->timeline = false;
+    semaphore->metal_shared_event_exportable = false;
     log_trace("created semaphore %#x", semaphore->vk_semaphore);
     dvz_obj_created(&semaphore->obj);
 }
@@ -586,6 +589,10 @@ void dvz_semaphore_timeline(
         info.pNext = &timeline_info;
     }
     VK_CHECK_RESULT(vkCreateSemaphore(vkd, &info, NULL, &semaphore->vk_semaphore));
+    semaphore->value = value;
+    semaphore->external_handle_types = handle_type;
+    semaphore->timeline = true;
+    semaphore->metal_shared_event_exportable = false;
     log_trace("created timeline semaphore %#x", semaphore->vk_semaphore);
     dvz_obj_created(&semaphore->obj);
 }
@@ -733,6 +740,10 @@ void dvz_semaphore_destroy(DvzSemaphore* semaphore)
         vkDestroySemaphore(vkd, semaphore->vk_semaphore, NULL);
         semaphore->vk_semaphore = VK_NULL_HANDLE;
     }
+    semaphore->value = 0;
+    semaphore->external_handle_types = 0;
+    semaphore->timeline = false;
+    semaphore->metal_shared_event_exportable = false;
     dvz_obj_destroyed(&semaphore->obj);
 }
 

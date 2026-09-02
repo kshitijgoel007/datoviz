@@ -3,7 +3,11 @@
 # -------------------------------------------------------------------------------------------------
 
 cmake_minimum_required(VERSION 3.21)
-project(datoviz VERSION 0.4 LANGUAGES C CXX)
+if(APPLE)
+    project(datoviz VERSION 0.4 LANGUAGES C CXX OBJC)
+else()
+    project(datoviz VERSION 0.4 LANGUAGES C CXX)
+endif()
 
 include(GNUInstallDirs)
 include(cmake/DvzShaders.cmake)

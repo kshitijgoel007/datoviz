@@ -94,6 +94,8 @@ int test_memory_interop_buffer_timeline(TstContext* suite, const TstCase* tstite
 
 int test_memory_interop_buffer_export(TstContext* suite, const TstCase* tstitem);
 
+int test_memory_interop_metal_buffer(TstContext* suite, const TstCase* tstitem);
+
 int test_memory_cuda_1(TstContext* suite, const TstCase* tstitem);
 
 int test_memory_cuda_2(TstContext* suite, const TstCase* tstitem);

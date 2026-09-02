@@ -264,6 +264,11 @@ if(OS_WINDOWS)
     list(APPEND DVZ_COMPILE_DEFINITIONS VK_USE_PLATFORM_WIN32_KHR NOMINMAX)
 endif()
 
+if(OS_MACOS)
+    # Enable Vulkan Metal surface and external-object declarations in Datoviz translation units.
+    list(APPEND DVZ_COMPILE_DEFINITIONS VK_USE_PLATFORM_METAL_EXT)
+endif()
+
 if(DVZ_WITH_MIMALLOC)
     list(APPEND DVZ_COMPILE_DEFINITIONS
         DVZ_HAS_MIMALLOC=$<IF:$<CONFIG:Release>,1,0>)
