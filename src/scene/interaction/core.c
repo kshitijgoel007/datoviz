@@ -94,8 +94,6 @@ static void _item_state_sync_visual_style(DvzScene* scene, DvzVisual* visual);
 
 static int _item_state_sync_visual(DvzScene* scene, DvzVisual* visual);
 
-int _scene_item_state_sync(DvzScene* scene, const char* reason);
-
 static int _selection_sync_item_state(DvzSelection* selection);
 
 static DvzPanel* _selection_card_panel_from_query(
@@ -2171,6 +2169,8 @@ void dvz_hover_destroy(DvzHover* hover)
 DvzResult dvz_hover_clear(DvzHover* hover)
 {
     ANN(hover);
+    if (!hover->has_item)
+        return DVZ_OK;
     DvzScene* scene = hover->scene;
     hover->has_item = false;
     hover->item = (DvzSelectionItem){0};
@@ -2233,21 +2233,24 @@ DvzResult dvz_hover_apply_query(DvzHover* hover, const DvzQueryResult* query)
     }
     if (!query->hit || query->resolved_target == DVZ_SCENE_TARGET_NONE)
     {
-        hover->has_item = false;
-        hover->item = (DvzSelectionItem){0};
-        return _scene_item_state_sync(hover->scene, "clear hover item_state");
+        return dvz_hover_clear(hover);
     }
     DvzSceneTargetKind target = hover->desc.target;
     if (target != DVZ_SCENE_TARGET_NONE && target != query->resolved_target)
         return -1;
 
-    hover->item = (DvzSelectionItem){
+    DvzSelectionItem item = {
         .visual_id = query->visual_id,
         .target = query->resolved_target,
         .link_channel = query->link_channel,
         .target_id = query->resolved_id,
         .link_key = query->link_key,
     };
+    if (hover->has_item && hover->item.visual_id == item.visual_id &&
+        hover->item.target == item.target && hover->item.target_id == item.target_id &&
+        hover->item.link_channel == item.link_channel && hover->item.link_key == item.link_key)
+        return DVZ_OK;
+    hover->item = item;
     hover->has_item = true;
     return _scene_item_state_sync(hover->scene, "update hover item_state");
 }
@@ -2449,6 +2452,37 @@ DvzSelection* dvz_item_interaction_selection(DvzItemInteraction* interaction)
 
 
 /**
+ * Suspend hover and discard this controller's unresolved hover work during pointer gestures.
+ *
+ * @param interaction the item interaction
+ */
+static void _item_interaction_suspend_hover(DvzItemInteraction* interaction)
+{
+    ANN(interaction);
+    interaction->hover_suspended = true;
+    if (interaction->hover != NULL)
+        dvz_hover_clear(interaction->hover);
+
+    DvzScene* scene = interaction->scene;
+    uint32_t old_count = scene->pending_query_count;
+    uint32_t write = 0;
+    for (uint32_t read = 0; read < old_count; read++)
+    {
+        DvzPendingQueryRequest pending = scene->pending_queries[read];
+        if (pending.item_interaction == interaction &&
+            pending.item_interaction_kind == DVZ_ITEM_INTERACTION_QUERY_HOVER)
+            continue;
+        scene->pending_queries[write++] = pending;
+    }
+    for (uint32_t i = write; i < old_count; i++)
+        scene->pending_queries[i] = (DvzPendingQueryRequest){0};
+    scene->pending_query_count = write;
+    scene->query_executor.pending_superseded_count += old_count - write;
+}
+
+
+
+/**
  * Apply a panel-local pointer event to an item interaction controller.
  *
  * @param interaction the item interaction
@@ -2459,9 +2493,32 @@ bool _scene_item_interaction_pointer(DvzItemInteraction* interaction, const DvzP
 {
     if (interaction == NULL || ev == NULL || !interaction->active)
         return false;
+    uint32_t button =
+        ev->button >= DVZ_POINTER_BUTTON_LEFT && ev->button <= DVZ_POINTER_BUTTON_RIGHT
+            ? 1u << ev->button
+            : 0;
+    if (ev->type == DVZ_POINTER_EVENT_PRESS)
+    {
+        interaction->hover_buttons |= button;
+        _item_interaction_suspend_hover(interaction);
+    }
+    else if (ev->type == DVZ_POINTER_EVENT_DRAG_START || ev->type == DVZ_POINTER_EVENT_DRAG)
+    {
+        interaction->hover_dragging = true;
+        _item_interaction_suspend_hover(interaction);
+    }
+    else if (ev->type == DVZ_POINTER_EVENT_RELEASE)
+        interaction->hover_buttons &= ~button;
+    else if (ev->type == DVZ_POINTER_EVENT_DRAG_STOP)
+        interaction->hover_dragging = false;
+
     if (ev->type == DVZ_POINTER_EVENT_MOVE && interaction->desc.hover_enabled &&
         interaction->hover != NULL)
     {
+        if (interaction->hover_buttons != 0 || interaction->hover_dragging)
+            return false;
+        // Resume only on fresh motion, never by accepting a pre-gesture result after release.
+        interaction->hover_suspended = false;
         return _item_interaction_queue_query(
                    interaction, ev->pos[0], ev->pos[1], DVZ_ITEM_INTERACTION_QUERY_HOVER) == 0;
     }
@@ -2510,7 +2567,8 @@ void _scene_item_interaction_apply_query_result(
     bool hit = query->hit && query->resolved_target != DVZ_SCENE_TARGET_NONE;
     if (query_kind == DVZ_ITEM_INTERACTION_QUERY_HOVER)
     {
-        if (interaction->hover == NULL || !interaction->desc.hover_enabled)
+        if (interaction->hover == NULL || !interaction->desc.hover_enabled ||
+            interaction->hover_suspended)
             return;
         if (hit || interaction->desc.clear_hover_on_miss)
             (void)dvz_hover_apply_query(interaction->hover, query);

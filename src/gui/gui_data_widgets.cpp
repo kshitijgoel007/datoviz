@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits.h>
 
@@ -227,7 +228,7 @@ _rows(const _Core* old, uint32_t count, const uint64_t* keys, uint32_t flags, _R
         out->index[i] = {keys[i], i};
         out->visible[i] = out->matches[i] = true;
     }
-    qsort(out->index, count, sizeof(_KeyIndex), _key_cmp);
+    std::qsort(out->index, count, sizeof(_KeyIndex), _key_cmp);
     for (uint32_t i = 1; i < count; i++)
         if (out->index[i - 1].key == out->index[i].key)
         {
@@ -1025,6 +1026,7 @@ DvzResult dvz_gui_tree_draw(
                 ImGuiSelectableFlags_AllowOverlap | ImGuiSelectableFlags_AllowDoubleClick,
                 ImVec2(0, row_height));
             bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+            bool row_hovered = ImGui::IsItemHovered();
             bool activated = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0);
             const ImVec2 next_row = ImGui::GetCursorScreenPos();
 
@@ -1089,6 +1091,18 @@ DvzResult dvz_gui_tree_draw(
                     ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
                 ImGui::TextUnformatted(tree->secondary[row]);
                 ImGui::PopStyleColor();
+            }
+            if (row_hovered)
+            {
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(tree->labels[row]);
+                if (tree->secondary[row][0])
+                {
+                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+                    ImGui::TextUnformatted(tree->secondary[row]);
+                    ImGui::PopTextWrapPos();
+                }
+                ImGui::EndTooltip();
             }
             if (activated && !disabled)
                 _event(
